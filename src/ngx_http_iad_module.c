@@ -311,27 +311,25 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
     ngx_buf_t                   *newline_buf;
     ngx_buf_t                   *buf;
 
-    ngx_buf_t                   *buf_state;
-    ngx_buf_t                   *buf_time;
-    ngx_buf_t                   *buf_end;
-
     ngx_str_t                   *computed_arg;
     ngx_str_t                   *computed_arg_elts;
 
     ngx_str_t                   *data_map_key;
     ngx_str_t                   *data_map_value;
-    ngx_str_t                   data_map_value_null = ngx_null_string;
+    ngx_str_t                   data_map_value_null = ngx_null_string;//此信息不加入r->pool中，这个是缓存值不释放
     
-    ngx_str_t                   s_mid = ngx_null_string;
-    ngx_str_t                   s_szn = ngx_null_string;
-    ngx_str_t                   s_data = ngx_null_string;
+    ngx_str_t                   *s_mid;
+    ngx_str_t                   *s_szn;
+    ngx_str_t                   *s_data;
     ngx_int_t                   i_action = 0; 
-
-    ngx_str_t                   str_json_state = ngx_null_string;
-    ngx_str_t                   str_json_time = ngx_null_string;
 
     ngx_chain_t *cl  = NULL; /* 链的链接 */
     ngx_chain_t **ll = NULL;  /* 总是指向最后一个链接的地址 */
+
+
+    s_mid = ngx_palloc(r->pool,sizeof(ngx_str_t));
+    s_szn = ngx_palloc(r->pool,sizeof(ngx_str_t));
+    s_data = ngx_palloc(r->pool,sizeof(ngx_str_t));
 
     uint8_t vt_str_cache = VT_STRING;
     
@@ -343,43 +341,43 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
     }
 
     /* 获取 mid 参数信息 */
-    if(ngx_http_arg(r, (u_char*)"mid", 3, &s_mid)!=NGX_OK){
+    if(ngx_http_arg(r, (u_char*)"mid", 3, s_mid)!=NGX_OK){
         //return NGX_HTTP_BAD_REQUEST;
     }
 
     /* 获取 action 参数信息 */
-    if(ngx_http_arg(r, (u_char*)"action", 6, &s_szn)==NGX_OK){
-        i_action = ngx_atoi(s_szn.data, s_szn.len);
+    if(ngx_http_arg(r, (u_char*)"action", 6, s_szn)==NGX_OK){
+        i_action = ngx_atoi(s_szn->data, s_szn->len);
         //return NGX_HTTP_BAD_REQUEST;
     }
 
     /* 获取key信息 */
-    data_map_key = &s_mid;
+    data_map_key = s_mid;
     data_map_value = &data_map_value_null;
+    //data_map_value = ngx_palloc(r->pool,sizeof(ngx_str_t));
 
     computed_arg_elts = computed_args->elts;
     for (i = 0; i < computed_args->nelts; i++) {
         computed_arg = &computed_arg_elts[i];
-		
-        buf = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));//开创ngx_buf_t类型内存空间
-        if (buf == NULL) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }
-    
+		        
         
         switch(i_action){
             case 0:{
                 /*  从zone 缓存中查找对象 */
                 ngx_shmap_get(zone,data_map_key, data_map_value,&vt_str_cache,0,0);
+
+                
+                //ngx_memcpy(data_map_value_copy->data,data_map_value->data,data_map_value->len);
+                //data_map_value_copy->len = data_map_value->len;
                                                   
-                /*  从缓存中找到key 返回value信息   */ 
+                /*  从缓存中找到key 返回value信息  
                 if(data_map_value->len > 0){
                     buf->start = buf->pos = data_map_value->data;
                     buf->last = buf->end = data_map_value->data + data_map_value->len;
                 }else{
                     buf->start = buf->pos = computed_arg->data;
                     buf->last = buf->end = computed_arg->data + computed_arg->len;
-                }
+                } */ 
                 break;
             }
                     
@@ -388,9 +386,13 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
             }
 
             case 101:{
-                ngx_http_arg(r, (u_char*)"data", 4, &s_data);
-                ngx_str_set(data_map_value,s_data.data);
-                data_map_value->len = s_data.len;
+                //安全处理-还没有处理，这里需要处理
+                computed_arg->data = NULL;
+                //computed_arg->data + computed_arg->len;
+
+                ngx_http_arg(r, (u_char*)"data", 4, s_data);
+                ngx_str_set(data_map_value,s_data->data);
+                data_map_value->len = s_data->len;
                 ngx_shmap_add(zone, data_map_key,data_map_value,VT_STRING,0,0);
                 break;
             }
@@ -403,38 +405,31 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
         }
 
         //拼接json数据 
+        //u_char str_zz_data[1024];
+        u_char *str_zz_data_p = ngx_palloc(r->pool,1024);
+        size_t str_zz_len =  data_map_value->len + ngx_cached_http_iad_yyyyMMdd.len + 21;
+ 
+        if(data_map_value->len > 0){
+            //(void) ngx_sprintf(str_zz_data, "{state:%d,data:%V,time:%V}",0,data_map_value,&ngx_cached_http_iad_yyyyMMdd);
+            (void) ngx_snprintf(str_zz_data_p, 1024, "{state:%d,data:%V,time:%V}",0,data_map_value,&ngx_cached_http_iad_yyyyMMdd);
+            //(void) ngx_snprintf(str_zz_data_p, str_zz_len, "{state:%d,data:%V,time:}",0,data_map_value);
+        }
+
+        //ngx_str_t ngx_str_send_json = ngx_string(str_zz_data);
+        ngx_str_t *ngx_str_send_json;
+        ngx_str_send_json = ngx_palloc(r->pool,sizeof(ngx_str_t));
+        ngx_str_send_json->data = str_zz_data_p;
+        ngx_str_send_json->len = str_zz_len;
         
-
-        buf_state = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));//开创ngx_buf_t类型内存空间
-        if (buf_state == NULL) {
+        buf = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));//开创ngx_buf_t类型内存空间
+        if (buf == NULL) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        }        
-        ngx_str_set(&str_json_state,"{state:0,data:");    
-        buf_state->start = buf_state->pos = str_json_state.data;
-        buf_state->last = buf_state->end = str_json_state.data + str_json_state.len;
-
-        buf_time = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));//开创ngx_buf_t类型内存空间
-        if (buf_time == NULL) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        } 
-        str_json_time = ngx_cached_http_iad_yyyyMMdd;//响应时间
-        buf_time->start = buf_time->pos = str_json_time.data;
-        buf_time->last = buf_time->end = str_json_time.data + str_json_time.len;
-        
-        buf_end = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));//开创ngx_buf_t类型内存空间
-        if (buf_end == NULL) {
-            return NGX_HTTP_INTERNAL_SERVER_ERROR;
-        } 
-        ngx_str_set(&str_json_state,"}");    
-        buf_end->start = buf_end->pos = str_json_state.data;
-        buf_end->last = buf_end->end = str_json_state.data + str_json_state.len;
-
-
+        }
         buf->memory = 1;
-        buf_state->memory = 1;
-        buf_time->memory = 1;
-        buf_end->memory = 1;
-			
+
+        buf->start = buf->pos = ngx_str_send_json->data;
+        buf->last = buf->end = ngx_str_send_json->data + ngx_str_send_json->len;
+
         if (cl == NULL) {
 
             /* buf_state */
@@ -442,30 +437,9 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
             if (cl == NULL) {
                 return NGX_HTTP_INTERNAL_SERVER_ERROR;
             }
-            cl->buf  = buf_state;
+            cl->buf  = buf;
             cl->next = NULL;
             ll = &cl->next;
-
-
-            /* 然后添加 buf-data */
-            *ll = ngx_alloc_chain_link(r->pool);
-            if (*ll == NULL) {
-                return NGX_HTTP_INTERNAL_SERVER_ERROR;
-            }
-            (*ll)->buf  = buf;
-            (*ll)->next = NULL;
-            ll = &(*ll)->next;
-
-
-            /* 然后添加buf_time */
-            *ll = ngx_alloc_chain_link(r->pool);
-            if (*ll == NULL) {
-                return NGX_HTTP_INTERNAL_SERVER_ERROR;
-            }
-            (*ll)->buf  = buf_time;
-            (*ll)->next = NULL;
-            ll = &(*ll)->next;
-
 
         } else {
             /* 附加一个空间 */
@@ -538,7 +512,7 @@ ngx_http_iad_send_chain_link(ngx_http_request_t* r,
         r->headers_out.status = NGX_HTTP_OK;
 		r->headers_out.content_type.len = sizeof("text/html") - 1;
 		r->headers_out.content_type.data = (u_char *) "text/html";
-		//r->headers_out.content_length_n = ngx_buf_size(cl->buf); //application/json
+		r->headers_out.content_length_n = ngx_buf_size(cl->buf); //application/json
         if (ngx_http_set_content_type(r) != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
