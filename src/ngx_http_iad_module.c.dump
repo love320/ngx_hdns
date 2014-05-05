@@ -59,6 +59,8 @@ static ngx_int_t ngx_http_iad_send_chain_link(ngx_http_request_t* r,
 		
 static char* ngx_http_iad_init_main_conf(ngx_conf_t *cf,void* conf);
 
+static ngx_str_t* ngx_http_iad_timestamp(ngx_http_request_t *r); 
+
 static ngx_command_t  ngx_http_iad_commands[] = {
 
     { ngx_string("iad"),
@@ -397,11 +399,19 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
 
         //拼接json数据 
         //u_char str_zz_data[1024];
-        u_char *str_zz_data_p = ngx_palloc(r->pool,1024);
-        size_t str_zz_len =  data_map_value->len + ngx_cached_http_iad_yyyyMMdd.len + 31;
+        size_t str_zz_len =  data_map_value->len + 60;
+        u_char *str_zz_data_p = ngx_palloc(r->pool,str_zz_len);
+        
+        
  
         if(data_map_value->len > 0){
-            (void) ngx_snprintf(str_zz_data_p, 1024, "{\"state\":%d,\"data\":\"%V\",\"time\":\"%V\"}",0,data_map_value,&ngx_cached_http_iad_yyyyMMdd);
+            (void) ngx_snprintf(str_zz_data_p, str_zz_len,
+                                "{\"state\":%d,\"gateway\":\"%V\",\"data\":\"%V\",\"time\":\"%T\"}",
+                                0,
+                                ngx_http_iad_timestamp(r),
+                                data_map_value,
+                                ngx_time()
+                                );
         }
 
         //ngx_str_t ngx_str_send_json = ngx_string(str_zz_data);
@@ -570,4 +580,28 @@ static char* ngx_http_iad_init_main_conf(ngx_conf_t *cf,void* conf)
 	
 	return NGX_CONF_OK;
 }
+
+
+static ngx_str_t* ngx_http_iad_timestamp(ngx_http_request_t *r)
+{
+    ngx_str_t       *ngx_timestamp;    
+    ngx_tm_t        *gmt;
+    u_char          *p_time;
+
+    ngx_timestamp = ngx_palloc(r->pool,sizeof(ngx_str_t));
+    gmt = ngx_palloc(r->pool,sizeof(ngx_tm_t));
+    p_time = ngx_palloc(r->pool,8);
+
+    ngx_gmtime(ngx_time() + 28800 , gmt); // 28800 = 8 * 60 * 60 在中国地区需要 加 8小时
+    
+    (void) ngx_snprintf(p_time, 8, "%4d%02d%02d",gmt->ngx_tm_year,gmt->ngx_tm_mon,gmt->ngx_tm_mday);
+
+    ngx_timestamp->data = p_time + 2;//偏移二个指针，"20140506" -> "140506" 
+    ngx_timestamp->len = 6;
+
+    return ngx_timestamp;
+    
+}
+
+
 
