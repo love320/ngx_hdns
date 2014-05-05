@@ -59,7 +59,13 @@ static ngx_int_t ngx_http_iad_send_chain_link(ngx_http_request_t* r,
 		
 static char* ngx_http_iad_init_main_conf(ngx_conf_t *cf,void* conf);
 
-static ngx_str_t* ngx_http_iad_timestamp(ngx_http_request_t *r); 
+static ngx_str_t* ngx_http_iad_timestamp(ngx_http_request_t *r); //处理时间格式，专用 gateway
+
+static ngx_int_t ngx_http_iad_arg(ngx_http_request_t *r, u_char *name, size_t len,ngx_str_t *value);//通用获取参数信息 支持get post
+
+static ngx_str_t* ngx_http_iad_cache_key(ngx_http_request_t *r,ngx_str_t *gateway,ngx_str_t *type);//合成缓存key值信息
+
+static ngx_str_t* ngx_http_iad_str_palloc(ngx_http_request_t *r);//专用 ngx_str_t 申请内存器并初始化
 
 static ngx_command_t  ngx_http_iad_commands[] = {
 
@@ -317,108 +323,154 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
 
     ngx_str_t                   *data_map_key;
     ngx_str_t                   *data_map_value;
-    ngx_str_t                   data_map_value_null = ngx_null_string;//此信息不加入r->pool中，这个是缓存值不释放
+    //ngx_str_t                   data_map_value_null = ngx_null_string;//此信息不加入r->pool中，这个是缓存值不释放
     
-    ngx_str_t                   *s_mid;
+    ngx_str_t                   *s_gateway;
+    ngx_str_t                   *s_app_type;
     ngx_str_t                   *s_szn;
     ngx_str_t                   *s_data;
+    ngx_str_t                   *s_iad;
     ngx_int_t                   i_action = 0; 
+
+    size_t                      str_json_len;
+    u_char                      *str_json_data_p;
+    ngx_str_t                   *ngx_str_send_json;
+
+    ngx_int_t                   i_state = 0;
+    
+
 
     ngx_chain_t *cl  = NULL; /* 链的链接 */
     ngx_chain_t **ll = NULL;  /* 总是指向最后一个链接的地址 */
 
 
-    s_mid = ngx_palloc(r->pool,sizeof(ngx_str_t));
-    s_szn = ngx_palloc(r->pool,sizeof(ngx_str_t));
-    s_data = ngx_palloc(r->pool,sizeof(ngx_str_t));
+    s_gateway = ngx_http_iad_str_palloc(r);
+    s_app_type = ngx_http_iad_str_palloc(r);
+    s_szn = ngx_http_iad_str_palloc(r);
+    s_data = ngx_http_iad_str_palloc(r);
+    s_iad = ngx_http_iad_str_palloc(r);
 
-    uint8_t vt_str_cache = VT_STRING;
-    
+    uint8_t vt_str_cache = VT_STRING;    
     
 	if (computed_args == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
     /* 获取 mid 参数信息 */
-    if(ngx_http_arg(r, (u_char*)"mid", 3, s_mid)!=NGX_OK){
-        //return NGX_HTTP_BAD_REQUEST;
-    }
+    if(ngx_http_iad_arg(r, (u_char*)"gateway", 7, s_gateway)!=NGX_OK){};
+
+    /* appType */
+    if(ngx_http_iad_arg(r, (u_char*)"appType", 7, s_app_type)!=NGX_OK){i_state = -501;}//应用APP信息 没有
 
     /* 获取 action 参数信息 */
-    if(ngx_http_arg(r, (u_char*)"action", 6, s_szn)==NGX_OK){
-        i_action = ngx_atoi(s_szn->data, s_szn->len);
-        //return NGX_HTTP_BAD_REQUEST;
+    if(ngx_http_iad_arg(r, (u_char*)"action", 6, s_szn)==NGX_OK){
+        i_action = ngx_atoi(s_szn->data, s_szn->len);    
     }
 
+    //若用户是注册，则action = 1;
+    if(i_action == 0 && s_gateway->len == 0) i_action = 1;
+
     /* 获取key信息 */
-    data_map_key = s_mid;
-    data_map_value = &data_map_value_null;
-    //data_map_value = ngx_palloc(r->pool,sizeof(ngx_str_t));
+    data_map_key = ngx_http_iad_cache_key(r,s_gateway,s_app_type);
+
+    //data_map_key = s_gateway;
+   // data_map_value = &data_map_value_null;
+    data_map_value = ngx_http_iad_str_palloc(r);
+
+    if(i_state != 0){ i_action = -1;}//状态不满足需求，不处理。i_action = -1 跳过处理
 
     computed_arg_elts = computed_args->elts;
     for (i = 0; i < computed_args->nelts; i++) {
-        computed_arg = &computed_arg_elts[i];
-		        
+        computed_arg = &computed_arg_elts[i];		        
         
         switch(i_action){
             case 0:{
+                if(data_map_key->len <= 0){i_state = -1;break;}//无key信息
                 /*  从zone 缓存中查找对象 */
                 ngx_shmap_get(zone,data_map_key, data_map_value,&vt_str_cache,0,0);
 
-                //没有找到使用默认 999999
-                if(data_map_value->len <= 0){
-                    ngx_shmap_get(zone,&data_map_key_defalue, data_map_value,&vt_str_cache,0,0);
-                }
+                //没有找到
+                if(data_map_value->len <= 0) {i_state = 2;} 
                 break;
             }
                     
             case 1:{
+                s_gateway = ngx_http_iad_timestamp(r);//分配注册信息
                 //使用默认 999999
                 ngx_shmap_get(zone,&data_map_key_defalue, data_map_value,&vt_str_cache,0,0);
+                if(data_map_value->len <= 0) i_state = 4;//默认信息未初始化
                 break;
             }
 
-            case 101:{
-                //安全处理-还没有处理，这里需要处理
-                computed_arg->data = NULL;
-                //computed_arg->data + computed_arg->len;
+            case 101:{      
+                if(!(r->method & NGX_HTTP_POST)){i_state = -120;break;}//新增操作必需为post方式          
+                if(ngx_http_iad_arg(r, (u_char*)"iad", 3, s_iad)!=NGX_OK){i_state = -101;break;}//无参数iad - 密钥                 
+                if(s_iad->len != computed_arg->len){ i_state = -102;break;}//参数iad - 密钥 长度不一致 
+                if(ngx_strncmp(s_iad->data,computed_arg->data,computed_arg->len) != 0){ i_state = -103;break;}//参数iad 不等于 密钥
+                if(ngx_http_iad_arg(r, (u_char*)"data", 4, s_data)!=NGX_OK){ i_state = -104;break;}//无参数data信息
 
-                ngx_http_arg(r, (u_char*)"data", 4, s_data);
-                ngx_str_set(data_map_value,s_data->data);
-                data_map_value->len = s_data->len;
-                ngx_shmap_add(zone, data_map_key,data_map_value,VT_STRING,0,0);
+                ngx_shmap_get(zone,data_map_key, data_map_value,&vt_str_cache,0,0);//检测key是否存在
+                if(data_map_value->len > 0){ i_state = -105;break;}//key 对应 value 已存在
+
+                ngx_str_set(data_map_value,s_data->data);//装载data信息                 
+                data_map_value->len = s_data->len;//设置信息长度
+                ngx_shmap_add(zone, data_map_key,data_map_value,VT_STRING,0,0);//加入缓存数据
+               
                 break;
             }
 
-            case 102:{
-                ngx_shmap_delete(zone,data_map_key);                
+            case 102:{             
+                if(ngx_http_iad_arg(r, (u_char*)"iad", 3, s_iad)!=NGX_OK){i_state = -101;break;}//无参数iad - 密钥 
+                if(s_iad->len != computed_arg->len){ i_state = -102;break;}//参数iad - 密钥 长度不一致 
+                if(ngx_strncmp(s_iad->data,computed_arg->data,computed_arg->len) != 0){ i_state = -103;break;}//参数iad 不等于 密钥
+
+                ngx_shmap_get(zone,data_map_key, data_map_value,&vt_str_cache,0,0);//检测key是否存在
+                if(data_map_value->len > 0){ i_state = -105;break;}//key 对应 value 已存在
+
+                ngx_shmap_delete(zone,data_map_key);//移除缓存数据      
                 break;
+            }
+
+            case 9999:{
+                //无效区，放一些暂时不用的东东
+                ngx_http_iad_cache_key(r,s_gateway,s_app_type);
+                ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,":get Go len %d ]]",s_app_type->len);//打印内容
             }
                     
         }
 
-        //拼接json数据 
-        //u_char str_zz_data[1024];
-        size_t str_zz_len =  data_map_value->len + 60;
-        u_char *str_zz_data_p = ngx_palloc(r->pool,str_zz_len);
-        
-        
- 
-        if(data_map_value->len > 0){
-            (void) ngx_snprintf(str_zz_data_p, str_zz_len,
+        //拼接json数据                
+        if(i_state == 0){
+            str_json_len =  data_map_value->len + 60;
+            str_json_data_p = ngx_palloc(r->pool,str_json_len);  
+
+            (void) ngx_snprintf(str_json_data_p, str_json_len,
                                 "{\"state\":%d,\"gateway\":\"%V\",\"data\":\"%V\",\"time\":\"%T\"}",
-                                0,
-                                ngx_http_iad_timestamp(r),
+                                i_state,
+                                s_gateway,
                                 data_map_value,
                                 ngx_time()
                                 );
-        }
+        }else{       
+            str_json_len = 34 ;
+            if(i_state > 0 && i_state < 10) str_json_len =  31;
+            if(i_state >= 10 && i_state < 100) str_json_len =  32;
+            if(i_state >= 100) str_json_len =  33;
+            if(i_state < 0 && i_state > -10) str_json_len =  32;
+            if(i_state <= -10 && i_state > -100) str_json_len =  33;
+            if(i_state <= -100) str_json_len =  34;
 
-        //ngx_str_t ngx_str_send_json = ngx_string(str_zz_data);
-        ngx_str_t *ngx_str_send_json;
-        ngx_str_send_json = ngx_palloc(r->pool,sizeof(ngx_str_t));
-        ngx_str_send_json->data = str_zz_data_p;
-        ngx_str_send_json->len = str_zz_len;
+            str_json_data_p = ngx_palloc(r->pool,str_json_len);  
+            (void) ngx_snprintf(str_json_data_p, str_json_len,
+                                "{\"state\":%d,\"time\":\"%T\"}",
+                                i_state,                                
+                                ngx_time()
+                                );
+        }
+        
+        ngx_str_send_json = ngx_http_iad_str_palloc(r);
+        ngx_str_send_json->data = str_json_data_p;
+        ngx_str_send_json->len = str_json_len;
         
         buf = ngx_pcalloc(r->pool, sizeof(ngx_buf_t));//开创ngx_buf_t类型内存空间
         if (buf == NULL) {
@@ -509,14 +561,14 @@ ngx_http_iad_send_chain_link(ngx_http_request_t* r,
 		/*	声明使用text/html模式返回信息 */
         ctx->headers_sent = 1;
         r->headers_out.status = NGX_HTTP_OK;
-		r->headers_out.content_type.len = sizeof("text/html") - 1;
-		r->headers_out.content_type.data = (u_char *) "text/html";
+		r->headers_out.content_type.len = sizeof("application/json") - 1;
+		r->headers_out.content_type.data = (u_char *) "application/json";
 		r->headers_out.content_length_n = ngx_buf_size(cl->buf); //application/json
         if (ngx_http_set_content_type(r) != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
 
-        rc = ngx_http_send_header(r);	
+        rc = ngx_http_send_header(r);
 		
         if (r->header_only || rc >= NGX_HTTP_SPECIAL_RESPONSE) {
             return rc;
@@ -582,13 +634,22 @@ static char* ngx_http_iad_init_main_conf(ngx_conf_t *cf,void* conf)
 }
 
 
+static ngx_str_t* ngx_http_iad_str_palloc(ngx_http_request_t *r)
+{
+    ngx_str_t *value;
+    value = ngx_palloc(r->pool,sizeof(ngx_str_t));
+    value->len = 0;
+    return value;
+}
+
+
 static ngx_str_t* ngx_http_iad_timestamp(ngx_http_request_t *r)
 {
     ngx_str_t       *ngx_timestamp;    
     ngx_tm_t        *gmt;
     u_char          *p_time;
 
-    ngx_timestamp = ngx_palloc(r->pool,sizeof(ngx_str_t));
+    ngx_timestamp = ngx_http_iad_str_palloc(r);
     gmt = ngx_palloc(r->pool,sizeof(ngx_tm_t));
     p_time = ngx_palloc(r->pool,8);
 
@@ -603,5 +664,78 @@ static ngx_str_t* ngx_http_iad_timestamp(ngx_http_request_t *r)
     
 }
 
+
+static ngx_int_t ngx_http_iad_arg(ngx_http_request_t *r, u_char *name, size_t len,ngx_str_t *value)
+{   
+
+    u_char  *p, *last, *start, *end;
+
+    if (r->method & NGX_HTTP_POST) {
+        p = r->header_in->pos;
+        last = r->header_in->last;
+        start = r->header_in->pos;
+        end = r->header_in->last;   
+    }else{
+        p = r->args.data;
+        last = p + r->args.len;
+        start = r->args.data;
+        end = p + r->args.len;  
+    }
+            
+
+    for ( /* void */ ; p < last; p++) {
+
+        p = ngx_strlcasestrn(p, last - 1, name, len - 1);
+
+        if (p == NULL) {
+            return NGX_DECLINED;
+        }
+
+        if ((p == start || *(p - 1) == '&') && *(p + len) == '=') {
+
+            value->data = p + len + 1;
+
+            p = ngx_strlchr(p, last, '&');
+
+            if (p == NULL) {
+                p = end;
+            }
+
+            value->len = p - value->data;
+
+            return NGX_OK;
+        }
+    }
+
+    return NGX_DECLINED;
+     
+}
+
+static ngx_str_t* ngx_http_iad_cache_key(ngx_http_request_t *r,ngx_str_t *gateway,ngx_str_t *type)
+{
+    ngx_str_t       *s_key;
+    u_char          *s_gt_value;
+    size_t          i_size;
+
+    
+    
+    s_key = ngx_http_iad_str_palloc(r);
+    s_key->len = 0;
+    
+    
+    if(gateway->len <= 0 || type->len <=0){ return s_key;}
+        
+    i_size = gateway->len + type->len + 1;
+
+    s_gt_value = ngx_palloc(r->pool,i_size);    
+
+    (void) ngx_snprintf(s_gt_value, i_size, "%V_%V",gateway,type);
+
+    s_key->data = s_gt_value; 
+    s_key->len = i_size;
+
+    return s_key;
+    
+}
 
 
