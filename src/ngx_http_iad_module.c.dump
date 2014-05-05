@@ -20,7 +20,8 @@ static ngx_buf_t ngx_http_iad_space_buf;
 static ngx_buf_t ngx_http_iad_newline_buf;
 
 static ngx_shm_zone_t* zone ;
-static int zone_in = 0;
+
+static ngx_str_t data_map_key_defalue = ngx_null_string;
 
 
 /* 过滤器 初始化 */
@@ -57,8 +58,6 @@ static ngx_int_t ngx_http_iad_send_chain_link(ngx_http_request_t* r,
         ngx_http_iad_ctx_t *ctx, ngx_chain_t *cl);
 		
 static char* ngx_http_iad_init_main_conf(ngx_conf_t *cf,void* conf);
-
-static char* ngx_http_iad_data_init_conf();
 
 static ngx_command_t  ngx_http_iad_commands[] = {
 
@@ -334,8 +333,6 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
     uint8_t vt_str_cache = VT_STRING;
     
     
-    ngx_http_iad_data_init_conf();
-	
 	if (computed_args == NULL) {
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
@@ -366,22 +363,16 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
                 /*  从zone 缓存中查找对象 */
                 ngx_shmap_get(zone,data_map_key, data_map_value,&vt_str_cache,0,0);
 
-                
-                //ngx_memcpy(data_map_value_copy->data,data_map_value->data,data_map_value->len);
-                //data_map_value_copy->len = data_map_value->len;
-                                                  
-                /*  从缓存中找到key 返回value信息  
-                if(data_map_value->len > 0){
-                    buf->start = buf->pos = data_map_value->data;
-                    buf->last = buf->end = data_map_value->data + data_map_value->len;
-                }else{
-                    buf->start = buf->pos = computed_arg->data;
-                    buf->last = buf->end = computed_arg->data + computed_arg->len;
-                } */ 
+                //没有找到使用默认 999999
+                if(data_map_value->len <= 0){
+                    ngx_shmap_get(zone,&data_map_key_defalue, data_map_value,&vt_str_cache,0,0);
+                }
                 break;
             }
                     
             case 1:{
+                //使用默认 999999
+                ngx_shmap_get(zone,&data_map_key_defalue, data_map_value,&vt_str_cache,0,0);
                 break;
             }
 
@@ -407,12 +398,10 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
         //拼接json数据 
         //u_char str_zz_data[1024];
         u_char *str_zz_data_p = ngx_palloc(r->pool,1024);
-        size_t str_zz_len =  data_map_value->len + ngx_cached_http_iad_yyyyMMdd.len + 21;
+        size_t str_zz_len =  data_map_value->len + ngx_cached_http_iad_yyyyMMdd.len + 31;
  
         if(data_map_value->len > 0){
-            //(void) ngx_sprintf(str_zz_data, "{state:%d,data:%V,time:%V}",0,data_map_value,&ngx_cached_http_iad_yyyyMMdd);
-            (void) ngx_snprintf(str_zz_data_p, 1024, "{state:%d,data:%V,time:%V}",0,data_map_value,&ngx_cached_http_iad_yyyyMMdd);
-            //(void) ngx_snprintf(str_zz_data_p, str_zz_len, "{state:%d,data:%V,time:}",0,data_map_value);
+            (void) ngx_snprintf(str_zz_data_p, 1024, "{\"state\":%d,\"data\":\"%V\",\"time\":\"%V\"}",0,data_map_value,&ngx_cached_http_iad_yyyyMMdd);
         }
 
         //ngx_str_t ngx_str_send_json = ngx_string(str_zz_data);
@@ -576,32 +565,9 @@ static char* ngx_http_iad_init_main_conf(ngx_conf_t *cf,void* conf)
 	size_t shm_size =1024*1024*10; //设置缓存大小 1024*1024*10 = 10M
 	ngx_str_t iad_shm_name = ngx_string("shm_iad_cache_zone"); //设置缓存的名字
 	zone = ngx_shmap_init(cf,&iad_shm_name,shm_size,&ngx_http_iad_module);//初始化缓存对象
+
+    ngx_str_set(&data_map_key_defalue,"999999");//默认key值
 	
 	return NGX_CONF_OK;
 }
-
-
-
-static char* ngx_http_iad_data_init_conf(){
-
-    if(zone_in == 1) return NGX_CONF_OK;
-
-    uint64_t exptime = 0;
-    ngx_str_t test_key = ngx_string("baidu");
-    ngx_str_t test_value = ngx_string("http://www.baidu.com");
-    ngx_shmap_add(zone, &test_key,&test_value,VT_STRING,exptime,0);
-    
-    ngx_str_t test_key1 = ngx_string("iad");
-    ngx_str_t test_value1 = ngx_string("http://www.iad.com");
-    ngx_shmap_add(zone, &test_key1,&test_value1,VT_STRING,exptime,0);
-    
-    ngx_str_t test_key2 = ngx_string("google");
-    ngx_str_t test_value2 = ngx_string("http://www.google.com");
-    ngx_shmap_add(zone, &test_key2,&test_value2,VT_STRING,exptime,0);
-    
-    zone_in = 1;
-
-    return NGX_CONF_OK;
-}
-
 
