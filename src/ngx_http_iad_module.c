@@ -19,9 +19,11 @@ static ngx_buf_t ngx_http_iad_space_buf;
 
 static ngx_buf_t ngx_http_iad_newline_buf;
 
-static ngx_shm_zone_t* zone ;
+static ngx_shm_zone_t* zone ;//缓存集
 
-static ngx_str_t data_map_key_defalue = ngx_null_string;
+static ngx_str_t data_map_key_defalue = ngx_null_string;//默认key 999999
+
+static ngx_str_t ngx_http_iad_domain = ngx_null_string;//网关主-备 信息
 
 
 /* 过滤器 初始化 */
@@ -325,6 +327,7 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
     ngx_str_t                   *data_map_value;
     //ngx_str_t                   data_map_value_null = ngx_null_string;//此信息不加入r->pool中，这个是缓存值不释放
     
+    ngx_str_t                   *s_domain;
     ngx_str_t                   *s_gateway;
     ngx_str_t                   *s_app_type;
     ngx_str_t                   *s_szn;
@@ -343,7 +346,7 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
     ngx_chain_t *cl  = NULL; /* 链的链接 */
     ngx_chain_t **ll = NULL;  /* 总是指向最后一个链接的地址 */
 
-
+    s_domain = ngx_http_iad_str_palloc(r);
     s_gateway = ngx_http_iad_str_palloc(r);
     s_app_type = ngx_http_iad_str_palloc(r);
     s_szn = ngx_http_iad_str_palloc(r);
@@ -356,11 +359,16 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
         return NGX_HTTP_INTERNAL_SERVER_ERROR;
     }
 
+    /*
+    if(!(r->method & (NGX_HTTP_GET|NGX_HTTP_POST))){
+        return NGX_HTTP_NOT_FOUND;
+    } */ 
+
     /* 获取 mid 参数信息 */
     if(ngx_http_iad_arg(r, (u_char*)"gateway", 7, s_gateway)!=NGX_OK){};
 
     /* appType */
-    if(ngx_http_iad_arg(r, (u_char*)"appType", 7, s_app_type)!=NGX_OK){i_state = -501;}//应用APP信息 没有
+    if(ngx_http_iad_arg(r, (u_char*)"appType", 7, s_app_type)!=NGX_OK){i_state = -201;}//应用APP信息 没有
 
     /* 获取 action 参数信息 */
     if(ngx_http_iad_arg(r, (u_char*)"action", 6, s_szn)==NGX_OK){
@@ -377,7 +385,17 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
    // data_map_value = &data_map_value_null;
     data_map_value = ngx_http_iad_str_palloc(r);
 
+    
+    ngx_shmap_get(zone,&ngx_http_iad_domain, s_domain,&vt_str_cache,0,0);//检测key_domain是否存在
+    //若是设置网关主备信息，则通过.可以跳过上判断
+    if(i_action == 501){
+        i_state = 0;
+    }else{
+        if(s_domain->len <= 0){i_state = 501;i_action = -1;}//网关域名未初始化
+    }
+
     if(i_state != 0){ i_action = -1;}//状态不满足需求，不处理。i_action = -1 跳过处理
+    
 
     computed_arg_elts = computed_args->elts;
     for (i = 0; i < computed_args->nelts; i++) {
@@ -415,7 +433,7 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
                 ngx_str_set(data_map_value,s_data->data);//装载data信息                 
                 data_map_value->len = s_data->len;//设置信息长度
                 ngx_shmap_add(zone, data_map_key,data_map_value,VT_STRING,0,0);//加入缓存数据
-               
+
                 break;
             }
 
@@ -431,22 +449,55 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
                 break;
             }
 
+            case 110:{             
+                if(ngx_http_iad_arg(r, (u_char*)"iad", 3, s_iad)!=NGX_OK){i_state = -101;break;}//无参数iad - 密钥 
+                if(s_iad->len != computed_arg->len){ i_state = -102;break;}//参数iad - 密钥 长度不一致 
+                if(ngx_strncmp(s_iad->data,computed_arg->data,computed_arg->len) != 0){ i_state = -103;break;}//参数iad 不等于 密钥
+                
+                ngx_shmap_flush_all(zone);//清空整个字典
+
+                break;
+            }
+
+            case 501:{
+                if(!(r->method & NGX_HTTP_POST)){i_state = -120;break;}//新增操作必需为post方式          
+                if(ngx_http_iad_arg(r, (u_char*)"iad", 3, s_iad)!=NGX_OK){i_state = -101;break;}//无参数iad - 密钥                 
+                if(s_iad->len != computed_arg->len){ i_state = -102;break;}//参数iad - 密钥 长度不一致 
+                if(ngx_strncmp(s_iad->data,computed_arg->data,computed_arg->len) != 0){ i_state = -103;break;}//参数iad 不等于 密钥
+                if(ngx_http_iad_arg(r, (u_char*)"data", 4, s_data)!=NGX_OK){ i_state = -504;break;}//无参数data信息                
+
+                ngx_shmap_get(zone,&ngx_http_iad_domain, s_domain,&vt_str_cache,0,0);//检测key是否存在
+                
+                if(s_domain->len > 0){
+                    ngx_shmap_replace(zone, &ngx_http_iad_domain,s_data,VT_STRING,0,0);//key 对应 value 已存在
+                }else{
+                    ngx_shmap_add(zone, &ngx_http_iad_domain,s_data,VT_STRING,0,0);//加入缓存数据
+                }
+
+                ngx_str_set(s_domain,s_data->data);//装载data信息                 
+                s_domain->len = s_data->len;//设置信息长度                
+
+                break;
+            }
+
             case 9999:{
                 //无效区，放一些暂时不用的东东
                 ngx_http_iad_cache_key(r,s_gateway,s_app_type);
                 ngx_log_error(NGX_LOG_ERR, r->connection->log, 0,":get Go len %d ]]",s_app_type->len);//打印内容
+                break;
             }
                     
-        }
+        }        
 
         //拼接json数据                
         if(i_state == 0){
-            str_json_len =  data_map_value->len + 60;
+            str_json_len =  data_map_value->len + s_domain->len + 72;
             str_json_data_p = ngx_palloc(r->pool,str_json_len);  
 
             (void) ngx_snprintf(str_json_data_p, str_json_len,
-                                "{\"state\":%d,\"gateway\":\"%V\",\"data\":\"%V\",\"time\":\"%T\"}",
+                                "{\"state\":%d,\"domain\":[%V],\"gateway\":\"%V\",\"data\":\"%V\",\"time\":\"%T\"}",
                                 i_state,
+                                s_domain,
                                 s_gateway,
                                 data_map_value,
                                 ngx_time()
@@ -466,7 +517,7 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
                                 i_state,                                
                                 ngx_time()
                                 );
-        }
+        }        
         
         ngx_str_send_json = ngx_http_iad_str_palloc(r);
         ngx_str_send_json->data = str_json_data_p;
@@ -629,6 +680,7 @@ static char* ngx_http_iad_init_main_conf(ngx_conf_t *cf,void* conf)
 	zone = ngx_shmap_init(cf,&iad_shm_name,shm_size,&ngx_http_iad_module);//初始化缓存对象
 
     ngx_str_set(&data_map_key_defalue,"999999");//默认key值
+    ngx_str_set(&ngx_http_iad_domain,"domain");//默认key值
 	
 	return NGX_CONF_OK;
 }
