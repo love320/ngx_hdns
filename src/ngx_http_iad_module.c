@@ -408,14 +408,24 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
                 ngx_shmap_get(zone,data_map_key, data_map_value,&vt_str_cache,0,0);
 
                 //没有找到
-                if(data_map_value->len <= 0) {i_state = 2;} 
+                if(data_map_value->len <= 0) { //缓存信息中没有找到
+                //i_state = 2;
+                    data_map_key = ngx_http_iad_cache_key(r,&data_map_key_defalue,s_app_type);//默认key
+
+                    //使用默认 999999
+                    ngx_shmap_get(zone,data_map_key, data_map_value,&vt_str_cache,0,0);
+                } 
+
                 break;
             }
                     
             case 1:{
                 s_gateway = ngx_http_iad_timestamp(r);//分配注册信息
+
+                data_map_key = ngx_http_iad_cache_key(r,&data_map_key_defalue,s_app_type);//默认key
+
                 //使用默认 999999
-                ngx_shmap_get(zone,&data_map_key_defalue, data_map_value,&vt_str_cache,0,0);
+                ngx_shmap_get(zone,data_map_key, data_map_value,&vt_str_cache,0,0);
                 if(data_map_value->len <= 0) i_state = 4;//默认信息未初始化
                 break;
             }
@@ -443,7 +453,7 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
                 if(ngx_strncmp(s_iad->data,computed_arg->data,computed_arg->len) != 0){ i_state = -103;break;}//参数iad 不等于 密钥
 
                 ngx_shmap_get(zone,data_map_key, data_map_value,&vt_str_cache,0,0);//检测key是否存在
-                if(data_map_value->len > 0){ i_state = -105;break;}//key 对应 value 已存在
+                if(data_map_value->len <= 0){ i_state = -106;break;}//移除的 key 对应 value 不存在
 
                 ngx_shmap_delete(zone,data_map_key);//移除缓存数据      
                 break;
@@ -495,7 +505,7 @@ ngx_http_iad_exec_iad(ngx_http_request_t *r,
             str_json_data_p = ngx_palloc(r->pool,str_json_len);  
 
             (void) ngx_snprintf(str_json_data_p, str_json_len,
-                                "{\"state\":%d,\"domain\":[%V],\"gateway\":\"%V\",\"data\":\"%V\",\"time\":\"%T\"}",
+                                "{\"state\":%d,\"domain\":\"%V\",\"gateway\":\"%V\",\"data\":\"%V\",\"time\":\"%T\"}",
                                 i_state,
                                 s_domain,
                                 s_gateway,
@@ -614,7 +624,7 @@ ngx_http_iad_send_chain_link(ngx_http_request_t* r,
         r->headers_out.status = NGX_HTTP_OK;
 		r->headers_out.content_type.len = sizeof("application/json") - 1;
 		r->headers_out.content_type.data = (u_char *) "application/json";
-		r->headers_out.content_length_n = ngx_buf_size(cl->buf); //application/json
+		//r->headers_out.content_length_n = ngx_buf_size(cl->buf); //application/json
         if (ngx_http_set_content_type(r) != NGX_OK) {
             return NGX_HTTP_INTERNAL_SERVER_ERROR;
         }
@@ -758,6 +768,13 @@ static ngx_int_t ngx_http_iad_arg(ngx_http_request_t *r, u_char *name, size_t le
             return NGX_OK;
         }
     }
+
+    if (r->method & NGX_HTTP_POST) {
+        r->header_in->last = r->header_in->end;
+        r->header_in->pos = r->header_in->start;        
+    }
+
+    
 
     return NGX_DECLINED;
      
